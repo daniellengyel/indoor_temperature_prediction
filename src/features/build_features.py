@@ -47,13 +47,25 @@ def _create_timeseries_feature(data, aggregation_window, aggregation_type, forwa
     - Creates higher orders of the data. Shifts the aggregated data according to forward_shifts and backward_shifts. Will append to column name "+/-i" for an i forward/backward shift.
     :param data: (pd.series) with equally spaced timeseries Index.
     :param aggregation_window: (str) The timeframe length for which to aggregate.
-    :param aggregation_type: (str) ["mean", "max", "min", "None"].
-    :param forward_shifts: (int) Number of forward shifts.
-    :param backward_shifts: (int) Number of backward shifts.
-    :return: (pd.series) columns=["+/-i"] same index as input.
+    :param aggregation_type: (str) ["mean", "max", "min", "None"]. None does nothing to the data (as if aggregated assuming first value of aggregation window is constant throughout.)
+    :param forward_shifts: (int, positive) Number of forward shifts. Shift window is the timedelta of the input data timeseries.
+    :param backward_shifts: (int, positive) Number of backward shifts. Shift window is the timedelta of the input data timeseries.
+    :return: (pd.df) columns=orginal_col_name+["_+/-i"] *same pd.df index* as given in data input.
     """
     if not aggregation_type in ["mean", "max", "min"]:
         raise ValueError("Aggregation Type {} not valid/implemented.".format(aggregation_type))
+
+    assert forward_shifts >= 0
+    assert backward_shifts >= 0
+
+    # timeseries checks
+    if isinstance(data, pd.DataFrame):
+        if len(data.columns) != 1:
+            raise ValueError("Data with type pd.DataFrame is expected to have exactly one column.")
+    elif isinstance(data, pd.Series):
+        data = pd.DataFrame(data, columns=[""])
+    else:
+        raise ValueError("Data is expected to be of time pd.Dataframe or pd.Series.")
 
     # check if equally spaced timeseries
 
@@ -64,27 +76,49 @@ def _create_timeseries_feature(data, aggregation_window, aggregation_type, forwa
     # aggregation step
     if (aggregation_type != "None") and (data.shape[0] > 1):
 
-        df_td = (data.index[1] - data.index[0]).seconds
-        agg_td = xsg.get_window_in_sec(aggregation_window)
+        df_sec = (data.index[1] - data.index[0]).seconds
+        agg_sec = xsg.get_window_in_sec(aggregation_window)
 
-        if agg_td % df_td != 0:
-            raise ValueError("Aggregation window of {}S is not evenly divided by the time length of {}S between data points in the data.".format(agg_td, df_td))
-        if 24*60*60 % agg_td != 0:
-            raise ValueError("Aggregation window of {}S does not evenly divide a day.".format(agg_td))
+        if agg_sec % df_sec != 0:
+            raise ValueError("Aggregation window of {}S is not evenly divided by the time length of {}S between data points in the data.".format(agg_sec, df_sec))
+        if 24*60*60 % agg_sec != 0:
+            raise ValueError("Aggregation window of {}S does not evenly divide a day.".format(agg_sec))
 
-        aggregated_dfs = []
+        resample_dfs = []
         curr_base = 0
-        while curr_base < agg_td:
-            aggregated_dfs.append(data.resample(base=curr_base))
-            curr_base += df_td
 
+        while curr_base < agg_sec:
+            resample_dfs.append(data.resample("{}S".format(agg_sec), base=curr_base))
+            curr_base += df_sec
+
+        if aggregation_type == "mean":
+            aggregated_dfs = [resample_df.mean() for resample_df in resample_dfs]
+        elif aggregation_type == "max":
+            aggregated_dfs = [resample_df.max() for resample_df in resample_dfs]
+        elif aggregation_type == "min":
+            aggregated_dfs = [resample_df.min() for resample_df in resample_dfs]
+
+        data = pd.concat(aggregated_dfs).sort_index().loc[data.index]
 
 
     # shift step
+    data_name = data.columns[0]
 
-    pass
+    shifted_data = data.copy()
+    shifted_data.columns = [data_name + "_0"]
 
+    for i in range(1, forward_shifts+1):
+        shifted_data[data_name + "_+{}".format(i)] =shifted_data[data_name + "_0"].shift(periods=-i)
+    for i in range(1, backward_shifts+1):
+        shifted_data[data_name + "_-{}".format(i)] =shifted_data[data_name + "_0"].shift(periods=+i)
 
+    data = shifted_data
+
+    return data
+
+# create a function for labels. Also need to figure out a way to add time since last action change in a fast way.
+# This feature is only needed for the response function feature.
+# Think if higher order is same as response funciton.
 
 
 # def get_preprocessed_data(building, zone, start, end, window, raw_data_granularity="1m"):
